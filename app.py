@@ -4,6 +4,7 @@ import hashlib
 import firebase_admin
 import urllib.parse
 from firebase_admin import credentials, firestore
+from fpdf import FPDF  # Biblioteca para o PDF
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Collector 2026 Pro", layout="wide", page_icon="⚽")
@@ -13,11 +14,8 @@ st.set_page_config(page_title="Collector 2026 Pro", layout="wide", page_icon="�
 def init_firebase():
     if not firebase_admin._apps:
         try:
-            # Em vez de carregar o arquivo, carregamos do dicionário de Secrets do Streamlit
             firebase_secrets = st.secrets["firebase_credentials"]
-            # Converter o Secrets em um dicionário Python comum
             cred_dict = dict(firebase_secrets)
-            
             cred = credentials.Certificate(cred_dict)
             firebase_admin.initialize_app(cred)
         except Exception as e:
@@ -85,6 +83,33 @@ def get_fig_ids(secao):
     else:
         return [f"{sigla}-{i:02d}" for i in range(1, 21)]
 
+# --- FUNÇÃO PARA GERAR O PDF DE FALTANTES ---
+def gerar_pdf_faltantes(user_name, my_figs):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", "B", 16)
+    pdf.cell(0, 10, "🏆 Collector 2026 Pro - Figurinhas Faltantes", ln=True, align="C")
+    pdf.set_font("Arial", "", 12)
+    pdf.cell(0, 10, f"Usuário: {user_name}", ln=True, align="C")
+    pdf.ln(5)
+
+    for secao in LISTA_FINAL_ALBUM:
+        ids_secao = get_fig_ids(secao)
+        faltantes = [fid for fid in ids_secao if not my_figs.get(fid, {}).get('colada', False)]
+        
+        if faltantes:
+            pdf.set_font("Arial", "B", 11)
+            pdf.set_fill_color(230, 230, 230)
+            pdf.cell(0, 8, f" {secao}", ln=True, fill=True)
+            pdf.set_font("Arial", "", 10)
+            
+            # Agrupa os IDs em linhas para economizar espaço
+            texto_faltantes = ", ".join(faltantes)
+            pdf.multi_cell(0, 7, texto_faltantes)
+            pdf.ln(2)
+            
+    return pdf.output(dest='S').encode('latin-1')
+
 # --- ESTILIZAÇÃO CSS ---
 st.markdown("""
     <style>
@@ -115,7 +140,6 @@ def main():
         with aba2:
             nu = st.text_input("Novo Usuário").lower().strip()
             np = st.text_input("Nova Senha", type="password")
-            # REMOVIDO O CAMPO WHATSAPP
             if st.button("Criar Conta"):
                 if nu and np:
                     db.collection("usuarios").document(nu).set({'password': hash_pass(np)})
@@ -124,10 +148,22 @@ def main():
     else:
         user = st.session_state.user
         st.sidebar.title(f"Bem-vindo, {user.capitalize()}!")
-        if st.sidebar.button("Sair"): st.session_state.auth = False; st.rerun()
-
+        
+        # --- CARREGAR DADOS ---
         docs = db.collection("usuarios").document(user).collection("figurinhas").stream()
         my_figs = {doc.id: doc.to_dict() for doc in docs}
+
+        # --- BOTÃO DE PDF NA SIDEBAR ---
+        pdf_bytes = gerar_pdf_faltantes(user, my_figs)
+        st.sidebar.download_button(
+            label="📄 Baixar PDF de Faltas",
+            data=pdf_bytes,
+            file_name=f"faltas_album_{user}.pdf",
+            mime="application/pdf",
+            use_container_width=True
+        )
+
+        if st.sidebar.button("Sair"): st.session_state.auth = False; st.rerun()
 
         tab_album, tab_trocas, tab_chat = st.tabs(["🖼️ ÁLBUM", "🤝 TROCAS", "💬 MEU CHAT"])
 
@@ -152,8 +188,6 @@ def main():
 
         with tab_trocas:
             st.subheader("Central de Matches")
-            
-            # Gerar lista dinâmica de faltas baseada na nova ordem
             todas_figs = []
             for s in LISTA_FINAL_ALBUM: todas_figs.extend(get_fig_ids(s))
             
@@ -191,7 +225,6 @@ def main():
                     if st.button("Enviar Proposta no App"):
                         db.collection("mensagens").add({'de': user, 'para': parceiro, 'texto': txt_final, 'timestamp': firestore.SERVER_TIMESTAMP})
                         st.success(f"✅ Mensagem enviada com sucesso para @{parceiro}!")
-                        # REMOVIDA A FUNCIONALIDADE DE NOTIFICAR NO WHATSAPP
             else: st.info("Nenhuma troca disponível no momento.")
 
         with tab_chat:

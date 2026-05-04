@@ -1,173 +1,222 @@
 import streamlit as st
 import pandas as pd
-import sqlite3
 import hashlib
+import firebase_admin
+import urllib.parse
+from firebase_admin import credentials, firestore
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Copa 2026 - Collector Pro", layout="wide", page_icon="⚽")
+st.set_page_config(page_title="Collector 2026 Pro", layout="wide", page_icon="⚽")
+
+# --- INICIALIZAÇÃO DO FIREBASE (Singleton) ---
+@st.cache_resource
+def init_firebase():
+    if not firebase_admin._apps:
+        try:
+            cred = credentials.Certificate('firebase_key.json')
+            firebase_admin.initialize_app(cred)
+        except Exception as e:
+            st.error(f"Erro ao carregar Firebase: {e}")
+            return None
+    return firestore.client()
+
+db = init_firebase()
+
+# --- MAPEAMENTO DE SIGLAS E BANDEIRAS ---
+SIGLAS_CUSTOM = {
+    "Página inicial": "FWC", "México": "MEX", "África do Sul": "RSA", "Coreia do Sul": "KOR", 
+    "Rep. Tcheca": "CZE", "Canadá": "CAN", "Bósnia": "BIH", "Qatar": "QAT", "Suíça": "SUI",
+    "Brasil": "BRA", "Marrocos": "MAR", "Haiti": "HAI", "Escócia": "SCO", "EUA": "USA",
+    "Paraguai": "PAR", "Austrália": "AUS", "Turquia": "TUR", "Alemanha": "GER", 
+    "Curaçao": "CUW", "Costa do Marfim": "CIV", "Equador": "ECU", "Holanda": "NED",
+    "Japão": "JPN", "Suécia": "SWE", "Tunísia": "TUN", "Bélgica": "BEL", "Egito": "EGY",
+    "Irã": "IRN", "Nova Zelândia": "NZL", "Espanha": "ESP", "Cabo Verde": "CPV",
+    "Arábia Saudita": "KSA", "Uruguai": "URU", "França": "FRA", "Senegal": "SEN",
+    "Iraque": "IRQ", "Noruega": "NOR", "Argentina": "ARG", "Argélia": "ALG",
+    "Áustria": "AUT", "Jordânia": "JOR", "Portugal": "POR", "RD Congo": "COD",
+    "Uzbequistão": "UZB", "Colômbia": "COL", "Inglaterra": "ENG", "Croácia": "CRO",
+    "Gana": "GHA", "Panamá": "PAN", "FIFA World Cup History": "FWC", "Figurinhas da Coca-Cola": "CC"
+}
+
+BANDEIRAS = {
+    "México": "mx", "África do Sul": "za", "Coreia do Sul": "kr", "Rep. Tcheca": "cz",
+    "Canadá": "ca", "Bósnia": "ba", "Qatar": "qa", "Suíça": "ch", "Brasil": "br", 
+    "Marrocos": "ma", "Haiti": "ht", "Escócia": "gb-sct", "EUA": "us", "Paraguai": "py", 
+    "Austrália": "au", "Turquia": "tr", "Alemanha": "de", "Curaçao": "cw", "Costa do Marfim": "ci", 
+    "Equador": "ec", "Holanda": "nl", "Japão": "jp", "Suécia": "se", "Tunísia": "tn",
+    "Bélgica": "be", "Egito": "eg", "Irã": "ir", "Nova Zelândia": "nz", "Espanha": "es", 
+    "Cabo Verde": "cv", "Arábia Saudita": "sa", "Uruguai": "uy", "França": "fr", 
+    "Senegal": "sn", "Iraque": "iq", "Noruega": "no", "Argentina": "ar", "Argélia": "dz", 
+    "Áustria": "at", "Jordânia": "jo", "Portugal": "pt", "RD Congo": "cd", "Uzbequistão": "uz", 
+    "Colômbia": "co", "Inglaterra": "gb-eng", "Croácia": "hr", "Gana": "gh", "Panamá": "pa"
+}
+
+GRUPOS_SORTEIO = {
+    "GRUPO A": ["México", "África do Sul", "Coreia do Sul", "Rep. Tcheca"],
+    "GRUPO B": ["Canadá", "Bósnia", "Qatar", "Suíça"],
+    "GRUPO C": ["Brasil", "Marrocos", "Haiti", "Escócia"],
+    "GRUPO D": ["EUA", "Paraguai", "Austrália", "Turquia"],
+    "GRUPO E": ["Alemanha", "Curaçao", "Costa do Marfim", "Equador"],
+    "GRUPO F": ["Holanda", "Japão", "Suécia", "Tunísia"],
+    "GRUPO G": ["Bélgica", "Egito", "Irã", "Nova Zelândia"],
+    "GRUPO H": ["Espanha", "Cabo Verde", "Arábia Saudita", "Uruguai"],
+    "GRUPO I": ["França", "Senegal", "Iraque", "Noruega"],
+    "GRUPO J": ["Argentina", "Argélia", "Áustria", "Jordânia"],
+    "GRUPO K": ["Portugal", "RD Congo", "Uzbequistão", "Colômbia"],
+    "GRUPO L": ["Inglaterra", "Croácia", "Gana", "Panamá"]
+}
+
+LISTA_FINAL_ALBUM = ["Página inicial"] + [time for grupo in GRUPOS_SORTEIO.values() for time in grupo] + ["FIFA World Cup History", "Figurinhas da Coca-Cola"]
+
+# --- LÓGICA DE GERAÇÃO DE IDs ---
+def get_fig_ids(secao):
+    sigla = SIGLAS_CUSTOM.get(secao)
+    if secao == "Página inicial":
+        return [f"{sigla}-00"] + [f"{sigla}-{i:02d}" for i in range(1, 9)]
+    elif secao == "FIFA World Cup History":
+        return [f"{sigla}-{i:02d}" for i in range(9, 20)]
+    elif secao == "Figurinhas da Coca-Cola":
+        return [f"{sigla}{i}" for i in range(1, 15)]
+    else:
+        return [f"{sigla}-{i:02d}" for i in range(1, 21)]
 
 # --- ESTILIZAÇÃO CSS ---
 st.markdown("""
     <style>
-    .fig-card {
-        border: 2px solid #ddd;
-        border-radius: 8px;
-        padding: 10px;
-        text-align: center;
-        background-color: white;
-        margin-bottom: 10px;
-    }
-    .colada { background-color: #28a745 !important; color: white !important; border-color: #1e7e34 !important; }
-    .faltando { background-color: #f8f9fa; color: #6c757d; }
-    .rep-badge {
-        background-color: #ffc107;
-        color: black;
-        border-radius: 50%;
-        padding: 2px 7px;
-        font-weight: bold;
-        font-size: 0.8em;
-        position: relative;
-        top: -5px;
-    }
+    .fig-card { border: 2px solid #ddd; border-radius: 10px; padding: 10px; text-align: center; background-color: white; margin-bottom: 5px; position: relative; }
+    .colada { background-color: #1b5e20 !important; color: white !important; border-color: #003300 !important; }
+    .faltando { background-color: #f1f3f4; color: #5f6368; }
+    .rep-badge { background-color: #ffd600; color: black; border-radius: 50%; padding: 2px 7px; font-weight: bold; font-size: 0.8em; position: absolute; top: 5px; right: 5px; }
+    .msg-box { background: #f8f9fa; padding: 15px; border-radius: 10px; margin-bottom: 5px; border-left: 5px solid #25D366; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); }
     </style>
 """, unsafe_allow_html=True)
 
-# --- LÓGICA DE BANCO DE DADOS ---
-def init_db():
-    conn = sqlite3.connect('copa2026_v2.db')
-    c = conn.cursor()
-    c.execute('CREATE TABLE IF NOT EXISTS usuarios (username TEXT PRIMARY KEY, password TEXT)')
-    c.execute('CREATE TABLE IF NOT EXISTS figurinhas (username TEXT, id_fig TEXT, colada INTEGER, repetidas INTEGER, PRIMARY KEY(username, id_fig))')
-    conn.commit()
-    conn.close()
+def hash_pass(p): return hashlib.sha256(str.encode(p)).hexdigest()
 
-def hash_pass(password):
-    return hashlib.sha256(str.encode(password)).hexdigest()
-
-def update_sticker(user, fid, col, rep):
-    conn = sqlite3.connect('copa2026_v2.db')
-    c = conn.cursor()
-    c.execute('INSERT OR REPLACE INTO figurinhas VALUES (?,?,?,?)', (user, fid, col, rep))
-    conn.commit()
-    conn.close()
-
-# --- DEFINIÇÃO DAS SEÇÕES DO ÁLBUM ---
-SECOES_ESPECIAIS = ["ESTÁDIOS", "MUSEU FIFA", "LENDAS", "CIDADES SEDE"]
-SELECOES_2026 = [
-    "Canadá", "México", "Estados Unidos", "Argentina", "Brasil", "Uruguai", "Colômbia", "Equador", "Paraguai",
-    "Alemanha", "França", "Espanha", "Inglaterra", "Portugal", "Holanda", "Bélgica", "Itália", "Croácia", "Suíça", 
-    "Dinamarca", "Sérvia", "Polônia", "Áustria", "Turquia", "Nigéria", "Egito", "Senegal", "Marrocos", "Argélia", 
-    "Tunísia", "Costa do Marfim", "Camarões", "Mali", "Japão", "Coreia do Sul", "Austrália", "Arábia Saudita", 
-    "Irã", "Iraque", "Uzbequistão", "Catar", "Panamá", "Costa Rica", "Jamaica", "Honduras", "Nova Zelândia"
-]
-TODAS_SECOES = SECOES_ESPECIAIS + SELECOES_2026
-FIGS_POR_SECAO = 20 # Média de figurinhas por página
-
-# --- INTERFACE PRINCIPAL ---
 def main():
-    init_db()
     if 'auth' not in st.session_state: st.session_state.auth = False
 
-    # TELA DE ACESSO
     if not st.session_state.auth:
-        st.title("⚽ Álbum Copa 2026")
-        aba_log, aba_reg = st.tabs(["Login", "Cadastrar Nova Conta"])
-        
-        with aba_log:
-            u = st.text_input("Usuário")
+        st.title("🏆 Collector 2026 Pro")
+        aba1, aba2 = st.tabs(["Login", "Cadastrar"])
+        with aba1:
+            u = st.text_input("Usuário").lower().strip()
             p = st.text_input("Senha", type="password")
             if st.button("Entrar"):
-                conn = sqlite3.connect('copa2026_v2.db')
-                c = conn.cursor()
-                c.execute('SELECT password FROM usuarios WHERE username=?', (u,))
-                res = c.fetchone()
-                if res and res[0] == hash_pass(p):
-                    st.session_state.auth = True
-                    st.session_state.user = u
-                    st.rerun()
-                else: st.error("Usuário ou senha incorretos.")
-
-        with aba_reg:
-            nu = st.text_input("Escolha um Usuário")
-            np = st.text_input("Escolha uma Senha", type="password")
+                res = db.collection("usuarios").document(u).get()
+                if res.exists and res.to_dict()['password'] == hash_pass(p):
+                    st.session_state.auth = True; st.session_state.user = u; st.rerun()
+                else: st.error("Usuário ou senha inválidos.")
+        with aba2:
+            nu = st.text_input("Novo Usuário").lower().strip()
+            np = st.text_input("Nova Senha", type="password")
+            # REMOVIDO O CAMPO WHATSAPP
             if st.button("Criar Conta"):
-                try:
-                    conn = sqlite3.connect('copa2026_v2.db')
-                    c = conn.cursor()
-                    c.execute('INSERT INTO usuarios VALUES (?,?)', (nu, hash_pass(np)))
-                    conn.commit()
-                    st.success("Conta criada com sucesso! Vá para a aba Login.")
-                except: st.error("Este nome de usuário já está em uso.")
+                if nu and np:
+                    db.collection("usuarios").document(nu).set({'password': hash_pass(np)})
+                    st.success("Conta criada com sucesso! Faça login na outra aba.")
 
-    # APP LOGADO
     else:
         user = st.session_state.user
-        st.sidebar.title(f"Cup 2026")
-        st.sidebar.write(f"Usuário: **{user}**")
-        if st.sidebar.button("Sair"):
-            st.session_state.auth = False
-            st.rerun()
+        st.sidebar.title(f"Bem-vindo, {user.capitalize()}!")
+        if st.sidebar.button("Sair"): st.session_state.auth = False; st.rerun()
 
-        # Carregar dados do usuário logado
-        conn = sqlite3.connect('copa2026_v2.db')
-        df_user = pd.read_sql(f"SELECT * FROM figurinhas WHERE username='{user}'", conn)
-        conn.close()
+        docs = db.collection("usuarios").document(user).collection("figurinhas").stream()
+        my_figs = {doc.id: doc.to_dict() for doc in docs}
 
-        menu = st.tabs(["🖼️ MODO ÁLBUM", "📋 MODO LISTA"])
+        tab_album, tab_trocas, tab_chat = st.tabs(["🖼️ ÁLBUM", "🤝 TROCAS", "💬 MEU CHAT"])
 
-        with menu[0]:
-            secao = st.selectbox("Escolha a Página", TODAS_SECOES)
-            st.divider()
-            cols = st.columns(5)
-            for i in range(1, FIGS_POR_SECAO + 1):
-                fid = f"{secao[:3].upper()}-{i:02d}"
-                row = df_user[df_user['id_fig'] == fid]
-                c_val = row['colada'].values[0] == 1 if not row.empty else False
-                r_val = int(row['repetidas'].values[0]) if not row.empty else 0
+        with tab_album:
+            secao_sel = st.selectbox("Navegar por Seleção", LISTA_FINAL_ALBUM)
+            c1, c2 = st.columns([0.8, 0.2])
+            with c1: st.subheader(secao_sel)
+            with c2:
+                if secao_sel in BANDEIRAS:
+                    st.image(f"https://flagcdn.com/w80/{BANDEIRAS[secao_sel]}.png", width=50)
+
+            ids_da_secao = get_fig_ids(secao_sel)
+            cols = st.columns(4)
+            for idx, fid in enumerate(ids_da_secao):
+                info = my_figs.get(fid, {"colada": False, "repetidas": 0})
+                with cols[idx % 4]:
+                    clase = "colada" if info['colada'] else "faltando"
+                    rep_html = f'<div class="rep-badge">+{info["repetidas"]}</div>' if info["repetidas"] > 0 else ""
+                    st.markdown(f'<div class="fig-card {clase}"><b>{fid}</b>{rep_html}</div>', unsafe_allow_html=True)
+                    if st.button("✏️", key=fid, use_container_width=True):
+                        st.session_state.edit = (fid, info['colada'], info['repetidas'])
+
+        with tab_trocas:
+            st.subheader("Central de Matches")
+            
+            # Gerar lista dinâmica de faltas baseada na nova ordem
+            todas_figs = []
+            for s in LISTA_FINAL_ALBUM: todas_figs.extend(get_fig_ids(s))
+            
+            minhas_faltas = [f for f in todas_figs if not my_figs.get(f, {}).get('colada', False)]
+            minhas_reps = [fid for fid, info in my_figs.items() if info.get('repetidas', 0) > 0]
+            
+            matches = []
+            for u in db.collection("usuarios").stream():
+                if u.id == user: continue
+                reps_parceiro = db.collection("usuarios").document(u.id).collection("figurinhas").where("repetidas", ">", 0).stream()
+                for r in reps_parceiro:
+                    if r.id in minhas_faltas:
+                        matches.append({"Dono": u.id, "Figurinha": r.id, "Qtd": r.to_dict()['repetidas']})
+            
+            if matches:
+                df = pd.DataFrame(matches)
+                st.dataframe(df, use_container_width=True, hide_index=True)
+                st.divider()
+                parceiro = st.selectbox("Selecionar parceiro para proposta:", df['Dono'].unique())
                 
-                with cols[(i-1)%5]:
-                    clase = "colada" if c_val else "faltando"
-                    rep_html = f'<span class="rep-badge">+{r_val}</span>' if r_val > 0 else ""
-                    st.markdown(f'<div class="fig-card {clase}"><b>{fid}</b><br>{rep_html}</div>', unsafe_allow_html=True)
-                    if st.button("Editar", key=fid):
-                        st.session_state.edit = (fid, c_val, r_val)
+                if parceiro:
+                    p_figs = {doc.id: doc.to_dict() for doc in db.collection("usuarios").document(parceiro).collection("figurinhas").stream()}
+                    interesses_dele = [f for f in minhas_reps if not p_figs.get(f, {}).get('colada', False)]
+                    figs_dele = df[df['Dono'] == parceiro]['Figurinha'].tolist()
 
-        with menu[1]:
-            st.subheader("Gerenciamento Rápido")
-            # Filtro para a lista
-            filtro = st.radio("Mostrar:", ["Todas", "Só Faltando", "Só Repetidas"], horizontal=True)
-            
-            lista_full = []
-            for s in TODAS_SECOES:
-                for i in range(1, FIGS_POR_SECAO + 1):
-                    fid = f"{s[:3].upper()}-{i:02d}"
-                    row = df_user[df_user['id_fig'] == fid]
-                    colada = row['colada'].values[0] == 1 if not row.empty else False
-                    reps = int(row['repetidas'].values[0]) if not row.empty else 0
-                    
-                    item = {"Seção": s, "ID": fid, "Status": "✅ Colada" if colada else "❌ Faltando", "Repetidas": reps}
-                    
-                    if filtro == "Só Faltando" and colada: continue
-                    if filtro == "Só Repetidas" and reps == 0: continue
-                    lista_full.append(item)
-            
-            st.dataframe(pd.DataFrame(lista_full), use_container_width=True, hide_index=True)
+                    c1, c2 = st.columns(2)
+                    with c1: st.info(f"**Ele tem pra você:**\n\n {', '.join(figs_dele)}")
+                    with c2:
+                        if interesses_dele: st.success(f"**Você tem pra ele:**\n\n {', '.join(interesses_dele)}")
+                        else: st.warning("Você não tem repetidas que ele precise.")
 
-        # Painel lateral de edição (Ativado ao clicar em Editar no álbum)
+                    msg_sugerida = f"Oi {parceiro}! Vi que você tem {', '.join(figs_dele)}. Eu tenho {', '.join(interesses_dele)} pra você. Bora trocar?"
+                    txt_final = st.text_area("Mensagem:", value=msg_sugerida)
+                    
+                    if st.button("Enviar Proposta no App"):
+                        db.collection("mensagens").add({'de': user, 'para': parceiro, 'texto': txt_final, 'timestamp': firestore.SERVER_TIMESTAMP})
+                        st.success(f"✅ Mensagem enviada com sucesso para @{parceiro}!")
+                        # REMOVIDA A FUNCIONALIDADE DE NOTIFICAR NO WHATSAPP
+            else: st.info("Nenhuma troca disponível no momento.")
+
+        with tab_chat:
+            st.subheader("Caixa de Entrada")
+            try:
+                msgs = db.collection("mensagens").where("para", "==", user).order_by("timestamp", direction=firestore.Query.DESCENDING).stream()
+                found = False
+                for m in msgs:
+                    found = True
+                    d = m.to_dict()
+                    col_msg, col_del = st.columns([0.9, 0.1])
+                    with col_msg:
+                        st.markdown(f'<div class="msg-box"><b>De: @{d["de"]}</b><br>{d["texto"]}</div>', unsafe_allow_html=True)
+                    with col_del:
+                        if st.button("🗑️", key=f"del_{m.id}"):
+                            db.collection("mensagens").document(m.id).delete()
+                            st.rerun()
+                if not found: st.info("Você não recebeu mensagens ainda.")
+            except: st.warning("O chat está sendo indexado ou não há mensagens.")
+
         if 'edit' in st.session_state:
             with st.sidebar:
                 st.divider()
                 fid, col, rep = st.session_state.edit
-                st.subheader(f"Atualizar {fid}")
-                nc = st.checkbox("Já Colei!", value=col)
-                nr = st.number_input("Qtd. Repetidas", min_value=0, value=rep)
-                if st.button("Salvar Alterações"):
-                    update_sticker(user, fid, 1 if nc else 0, nr)
-                    del st.session_state.edit
-                    st.rerun()
-                if st.button("Cancelar"):
-                    del st.session_state.edit
-                    st.rerun()
+                st.write(f"Editando: **{fid}**")
+                nc = st.checkbox("Já colada?", value=col)
+                nr = st.number_input("Qtd de Repetidas", min_value=0, value=int(rep))
+                if st.button("Salvar"):
+                    db.collection("usuarios").document(user).collection("figurinhas").document(fid).set({'colada': nc, 'repetidas': nr})
+                    del st.session_state.edit; st.rerun()
 
 if __name__ == "__main__":
     main()

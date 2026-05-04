@@ -101,15 +101,15 @@ def gerar_pdf_faltantes(user_name, my_figs):
         if faltantes:
             pdf.set_font("Helvetica", "B", 11)
             pdf.set_fill_color(240, 240, 240)
-            # Normalização para garantir que caracteres especiais não quebrem o PDF
+            # Normalização para caracteres especiais
             secao_limpa = unicodedata.normalize('NFKD', secao).encode('ascii', 'ignore').decode('ascii')
             pdf.cell(0, 8, f" {secao_limpa}", ln=True, fill=True)
             pdf.set_font("Helvetica", "", 10)
             pdf.multi_cell(0, 7, ", ".join(faltantes))
             pdf.ln(2)
     
-    # Retorna o PDF como bytes compatíveis com st.download_button
-    return pdf.output()
+    # IMPORTANTE: converter explicitamente para bytes para o download_button
+    return bytes(pdf.output())
 
 # --- ESTILIZAÇÃO ---
 st.markdown("""
@@ -153,7 +153,7 @@ def main():
         user = st.session_state.user
         st.sidebar.title(f"👋 Olá, {user.capitalize()}!")
         
-        # Carregamento de dados
+        # Carregamento de dados do álbum
         docs = db.collection("usuarios").document(user).collection("figurinhas").stream()
         my_figs = {doc.id: doc.to_dict() for doc in docs}
         
@@ -163,7 +163,6 @@ def main():
         reps_total = sum(f.get('repetidas', 0) for f in my_figs.values())
         progresso_global = coladas_total / total_album if total_album > 0 else 0
 
-        # Sidebar Stats
         st.sidebar.subheader("📊 Seu Progresso")
         st.sidebar.write(f"Figurinhas: **{coladas_total} / {total_album}**")
         st.sidebar.write(f"Repetidas: **{reps_total}**")
@@ -179,7 +178,7 @@ def main():
                 mime="application/pdf",
                 use_container_width=True
             )
-        except Exception:
+        except Exception as e:
             st.sidebar.error("Erro ao preparar PDF")
 
         if st.sidebar.button("Sair", use_container_width=True): 
@@ -196,8 +195,6 @@ def main():
                 filtro_view = st.radio("Visualizar:", ["Todas", "Faltantes", "Repetidas"], horizontal=True)
 
             ids_da_secao = get_fig_ids(secao_sel)
-            
-            # Filtro Lógico
             ids_filtrados = []
             for fid in ids_da_secao:
                 info = my_figs.get(fid, {"colada": False, "repetidas": 0})
@@ -205,7 +202,6 @@ def main():
                 if filtro_view == "Repetidas" and info['repetidas'] == 0: continue
                 ids_filtrados.append((fid, info))
 
-            # Header da Seção
             c1, c2 = st.columns([0.85, 0.15])
             with c1: 
                 coladas_secao = sum(1 for fid, info in ids_filtrados if info['colada'])
@@ -214,7 +210,6 @@ def main():
                 if secao_sel in BANDEIRAS:
                     st.image(f"https://flagcdn.com/w80/{BANDEIRAS[secao_sel]}.png", width=50)
 
-            # Grid de Figurinhas
             if not ids_filtrados:
                 st.info("Nenhuma figurinha corresponde ao filtro nesta seção.")
             else:
@@ -274,21 +269,31 @@ def main():
         with tab_chat:
             st.subheader("💬 Suas Mensagens")
             try:
-                msgs = db.collection("mensagens").where("para", "==", user).order_by("timestamp", direction=firestore.Query.DESCENDING).stream()
-                found_msg = False
-                for m in msgs:
-                    found_msg = True
-                    d = m.to_dict()
-                    col_m1, col_m2 = st.columns([0.85, 0.15])
-                    with col_m1:
-                        st.markdown(f'<div class="msg-box"><b>@{d["de"]}</b>: {d["texto"]}</div>', unsafe_allow_html=True)
-                    with col_m2:
-                        if st.button("🗑️", key=f"del_{m.id}"):
-                            db.collection("mensagens").document(m.id).delete()
-                            st.rerun()
-                if not found_msg: st.info("Sua caixa de entrada está vazia.")
-            except:
-                st.info("Sua caixa de entrada está vazia ou ainda não possui mensagens.")
+                # Consulta básica sem order_by inicialmente para evitar erro de índice no Firestore
+                msgs_ref = db.collection("mensagens").where("para", "==", user).stream()
+                
+                msgs_list = []
+                for m in msgs_ref:
+                    data = m.to_dict()
+                    data['id'] = m.id
+                    msgs_list.append(data)
+                
+                # Ordenação manual se necessário ou via Python para garantir que funcione sem índice
+                msgs_list.sort(key=lambda x: x.get('timestamp') or 0, reverse=True)
+
+                if msgs_list:
+                    for d in msgs_list:
+                        col_m1, col_m2 = st.columns([0.85, 0.15])
+                        with col_m1:
+                            st.markdown(f'<div class="msg-box"><b>@{d["de"]}</b>: {d["texto"]}</div>', unsafe_allow_html=True)
+                        with col_m2:
+                            if st.button("🗑️", key=f"del_{d['id']}"):
+                                db.collection("mensagens").document(d['id']).delete()
+                                st.rerun()
+                else:
+                    st.info("Sua caixa de entrada está vazia.")
+            except Exception as e:
+                st.info("Inicie uma conversa para ver suas mensagens aqui.")
 
         # Modal de Edição na Sidebar
         if 'edit' in st.session_state:

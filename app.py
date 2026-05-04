@@ -8,12 +8,17 @@ from firebase_admin import credentials, firestore
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Collector 2026 Pro", layout="wide", page_icon="⚽")
 
-# --- INICIALIZAÇÃO DO FIREBASE (Singleton) ---
+# --- INICIALIZAÇÃO DO FIREBASE SEGURA ---
 @st.cache_resource
 def init_firebase():
     if not firebase_admin._apps:
         try:
-            cred = credentials.Certificate('firebase_key.json')
+            # Em vez de carregar o arquivo, carregamos do dicionário de Secrets do Streamlit
+            firebase_secrets = st.secrets["firebase_credentials"]
+            # Converter o Secrets em um dicionário Python comum
+            cred_dict = dict(firebase_secrets)
+            
+            cred = credentials.Certificate(cred_dict)
             firebase_admin.initialize_app(cred)
         except Exception as e:
             st.error(f"Erro ao carregar Firebase: {e}")

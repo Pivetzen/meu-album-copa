@@ -2,21 +2,26 @@ import streamlit as st
 import pandas as pd
 import hashlib
 import firebase_admin
-import urllib.parse
+import json
 from firebase_admin import credentials, firestore
 from fpdf import FPDF
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Collector 2026 Pro", layout="wide", page_icon="⚽")
 
-# --- INICIALIZAÇÃO DO FIREBASE SEGURA ---
+# --- INICIALIZAÇÃO DO FIREBASE (VERSÃO ROBUSTA) ---
 @st.cache_resource
 def init_firebase():
     if not firebase_admin._apps:
         try:
-            firebase_secrets = st.secrets["firebase_credentials"]
-            cred_dict = dict(firebase_secrets)
-            cred = credentials.Certificate(cred_dict)
+            # Busca os segredos do Streamlit
+            fb_dict = dict(st.secrets["firebase_credentials"])
+            
+            # Limpeza crucial da chave privada para evitar erro de PEM
+            if "private_key" in fb_dict:
+                fb_dict["private_key"] = fb_dict["private_key"].replace("\\n", "\n")
+            
+            cred = credentials.Certificate(fb_dict)
             firebase_admin.initialize_app(cred)
         except Exception as e:
             st.error(f"Erro ao carregar Firebase: {e}")
@@ -25,7 +30,7 @@ def init_firebase():
 
 db = init_firebase()
 
-# --- MAPEAMENTO DE SIGLAS E BANDEIRAS ---
+# --- MAPEAMENTO DE DADOS ---
 SIGLAS_CUSTOM = {
     "Página inicial": "FWC", "México": "MEX", "África do Sul": "RSA", "Coreia do Sul": "KOR", 
     "Rep. Tcheca": "CZE", "Canadá": "CAN", "Bósnia": "BIH", "Qatar": "QAT", "Suíça": "SUI",
@@ -83,15 +88,12 @@ def get_fig_ids(secao):
     else:
         return [f"{sigla}-{i:02d}" for i in range(1, 21)]
 
-# --- FUNÇÃO PARA GERAR O PDF DE FALTANTES (CORRIGIDA) ---
+# --- FUNÇÃO PARA GERAR O PDF ---
 def gerar_pdf_faltantes(user_name, my_figs):
     pdf = FPDF()
     pdf.add_page()
-    
-    # Título sem emojis para evitar erro de encoding
     pdf.set_font("Arial", "B", 16)
-    pdf.cell(0, 10, "Collector 2026 Pro - Figurinhas Faltantes", ln=True, align="C")
-    
+    pdf.cell(0, 10, "Collector 2026 Pro - Lista de Faltas", ln=True, align="C")
     pdf.set_font("Arial", "", 12)
     pdf.cell(0, 10, f"Usuario: {user_name}", ln=True, align="C")
     pdf.ln(5)
@@ -102,17 +104,16 @@ def gerar_pdf_faltantes(user_name, my_figs):
         
         if faltantes:
             pdf.set_font("Arial", "B", 11)
-            pdf.set_fill_color(230, 230, 230)
-            # Encode para latin-1 para suportar acentos básicos
-            nome_secao = secao.encode('latin-1', 'replace').decode('latin-1')
-            pdf.cell(0, 8, f" {nome_secao}", ln=True, fill=True)
+            pdf.set_fill_color(240, 240, 240)
+            # Limpeza de caracteres para o PDF não quebrar
+            nome_clean = secao.encode('ascii', 'ignore').decode('ascii')
+            pdf.cell(0, 8, f" {nome_clean if nome_clean else secao[0:5]}", ln=True, fill=True)
             
             pdf.set_font("Arial", "", 10)
-            texto_faltantes = ", ".join(faltantes)
-            pdf.multi_cell(0, 7, texto_faltantes)
+            pdf.multi_cell(0, 7, ", ".join(faltantes))
             pdf.ln(2)
             
-    return pdf.output(dest='S')
+    return pdf.output(dest='S').encode('latin-1', 'ignore')
 
 # --- ESTILIZAÇÃO CSS ---
 st.markdown("""
@@ -142,34 +143,28 @@ def main():
                     if res.exists and res.to_dict()['password'] == hash_pass(p):
                         st.session_state.auth = True; st.session_state.user = u; st.rerun()
                     else: st.error("Usuário ou senha inválidos.")
-                else: st.error("Erro na conexão com Banco de Dados.")
+                else: st.error("Firebase não inicializado.")
         with aba2:
             nu = st.text_input("Novo Usuário").lower().strip()
             np = st.text_input("Nova Senha", type="password")
             if st.button("Criar Conta"):
                 if nu and np and db:
                     db.collection("usuarios").document(nu).set({'password': hash_pass(np)})
-                    st.success("Conta criada com sucesso! Faça login na outra aba.")
+                    st.success("Conta criada! Faça login.")
 
     else:
         user = st.session_state.user
         st.sidebar.title(f"Bem-vindo, {user.capitalize()}!")
         
-        # --- CARREGAR DADOS ---
+        # Carregamento de figurinhas
         docs = db.collection("usuarios").document(user).collection("figurinhas").stream()
         my_figs = {doc.id: doc.to_dict() for doc in docs}
 
-        # --- BOTÃO DE PDF NA SIDEBAR ---
+        # Download do PDF
         try:
-            pdf_bytes = gerar_pdf_faltantes(user, my_figs)
-            st.sidebar.download_button(
-                label="📄 Baixar PDF de Faltas",
-                data=pdf_bytes,
-                file_name=f"faltas_{user}.pdf",
-                mime="application/pdf",
-                use_container_width=True
-            )
-        except Exception as e:
+            pdf_data = gerar_pdf_faltantes(user, my_figs)
+            st.sidebar.download_button("📄 Baixar PDF de Faltas", pdf_data, f"faltas_{user}.pdf", "application/pdf", use_container_width=True)
+        except:
             st.sidebar.error("Erro ao gerar PDF")
 
         if st.sidebar.button("Sair"): st.session_state.auth = False; st.rerun()
@@ -197,70 +192,55 @@ def main():
 
         with tab_trocas:
             st.subheader("Central de Matches")
-            todas_figs = []
-            for s in LISTA_FINAL_ALBUM: todas_figs.extend(get_fig_ids(s))
-            
+            todas_figs = [f for s in LISTA_FINAL_ALBUM for f in get_fig_ids(s)]
             minhas_faltas = [f for f in todas_figs if not my_figs.get(f, {}).get('colada', False)]
             minhas_reps = [fid for fid, info in my_figs.items() if info.get('repetidas', 0) > 0]
             
             matches = []
             for u in db.collection("usuarios").stream():
                 if u.id == user: continue
-                reps_parceiro = db.collection("usuarios").document(u.id).collection("figurinhas").where("repetidas", ">", 0).stream()
-                for r in reps_parceiro:
+                reps_p = db.collection("usuarios").document(u.id).collection("figurinhas").where("repetidas", ">", 0).stream()
+                for r in reps_p:
                     if r.id in minhas_faltas:
                         matches.append({"Dono": u.id, "Figurinha": r.id, "Qtd": r.to_dict()['repetidas']})
             
             if matches:
                 df = pd.DataFrame(matches)
                 st.dataframe(df, use_container_width=True, hide_index=True)
-                st.divider()
-                parceiro = st.selectbox("Selecionar parceiro para proposta:", df['Dono'].unique())
-                
+                parceiro = st.selectbox("Trocar com:", df['Dono'].unique())
                 if parceiro:
-                    p_figs = {doc.id: doc.to_dict() for doc in db.collection("usuarios").document(parceiro).collection("figurinhas").stream()}
-                    interesses_dele = [f for f in minhas_reps if not p_figs.get(f, {}).get('colada', False)]
-                    figs_dele = df[df['Dono'] == parceiro]['Figurinha'].tolist()
-
-                    c1, c2 = st.columns(2)
-                    with c1: st.info(f"**Ele tem pra você:**\n\n {', '.join(figs_dele)}")
-                    with c2:
-                        if interesses_dele: st.success(f"**Você tem pra ele:**\n\n {', '.join(interesses_dele)}")
-                        else: st.warning("Você não tem repetidas que ele precise.")
-
-                    msg_sugerida = f"Oi {parceiro}! Vi que você tem {', '.join(figs_dele)}. Eu tenho {', '.join(interesses_dele)} pra você. Bora trocar?"
-                    txt_final = st.text_area("Mensagem:", value=msg_sugerida)
+                    p_figs = {d.id: d.to_dict() for d in db.collection("usuarios").document(parceiro).collection("figurinhas").stream()}
+                    dele = df[df['Dono'] == parceiro]['Figurinha'].tolist()
+                    meu = [f for f in minhas_reps if not p_figs.get(f, {}).get('colada', False)]
                     
-                    if st.button("Enviar Proposta no App"):
-                        db.collection("mensagens").add({'de': user, 'para': parceiro, 'texto': txt_final, 'timestamp': firestore.SERVER_TIMESTAMP})
-                        st.success(f"✅ Mensagem enviada com sucesso para @{parceiro}!")
-            else: st.info("Nenhuma troca disponível no momento.")
+                    st.info(f"Ele tem: {', '.join(dele)}")
+                    if meu: st.success(f"Você tem para ele: {', '.join(meu)}")
+                    
+                    if st.button("Enviar Proposta"):
+                        txt = f"Oi {parceiro}! Tenho {', '.join(meu)} e vi que você tem {', '.join(dele)}. Bora trocar?"
+                        db.collection("mensagens").add({'de': user, 'para': parceiro, 'texto': txt, 'timestamp': firestore.SERVER_TIMESTAMP})
+                        st.success("Enviado!")
+            else: st.info("Sem trocas agora.")
 
         with tab_chat:
-            st.subheader("Caixa de Entrada")
+            st.subheader("Mensagens")
             try:
                 msgs = db.collection("mensagens").where("para", "==", user).order_by("timestamp", direction=firestore.Query.DESCENDING).stream()
-                found = False
                 for m in msgs:
-                    found = True
                     d = m.to_dict()
-                    col_msg, col_del = st.columns([0.9, 0.1])
-                    with col_msg:
-                        st.markdown(f'<div class="msg-box"><b>De: @{d["de"]}</b><br>{d["texto"]}</div>', unsafe_allow_html=True)
-                    with col_del:
-                        if st.button("🗑️", key=f"del_{m.id}"):
-                            db.collection("mensagens").document(m.id).delete()
-                            st.rerun()
-                if not found: st.info("Você não recebeu mensagens ainda.")
-            except: st.warning("O chat está sendo indexado ou não há mensagens.")
+                    st.markdown(f'<div class="msg-box"><b>@{d["de"]}</b>: {d["texto"]}</div>', unsafe_allow_html=True)
+                    if st.button("Excluir", key=m.id):
+                        db.collection("mensagens").document(m.id).delete()
+                        st.rerun()
+            except: st.info("Nenhuma mensagem.")
 
         if 'edit' in st.session_state:
             with st.sidebar:
                 st.divider()
                 fid, col, rep = st.session_state.edit
                 st.write(f"Editando: **{fid}**")
-                nc = st.checkbox("Já colada?", value=col)
-                nr = st.number_input("Qtd de Repetidas", min_value=0, value=int(rep))
+                nc = st.checkbox("Colada?", value=col)
+                nr = st.number_input("Repetidas", min_value=0, value=int(rep))
                 if st.button("Salvar"):
                     db.collection("usuarios").document(user).collection("figurinhas").document(fid).set({'colada': nc, 'repetidas': nr})
                     del st.session_state.edit; st.rerun()

@@ -4,7 +4,7 @@ import hashlib
 import firebase_admin
 import json
 from firebase_admin import credentials, firestore
-from fpdf import FPDF2
+from fpdf import FPDF
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Collector 2026 Pro", layout="wide", page_icon="⚽")
@@ -88,32 +88,45 @@ def get_fig_ids(secao):
     else:
         return [f"{sigla}-{i:02d}" for i in range(1, 21)]
 
-# --- FUNÇÃO PARA GERAR O PDF ---
+# --- FUNÇÃO PARA GERAR O PDF CORRIGIDA ---
 def gerar_pdf_faltantes(user_name, my_figs):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", "B", 16)
-    pdf.cell(0, 10, "Collector 2026 Pro - Lista de Faltas", ln=True, align="C")
-    pdf.set_font("Arial", "", 12)
-    pdf.cell(0, 10, f"Usuario: {user_name}", ln=True, align="C")
-    pdf.ln(5)
-
-    for secao in LISTA_FINAL_ALBUM:
-        ids_secao = get_fig_ids(secao)
-        faltantes = [fid for fid in ids_secao if not my_figs.get(fid, {}).get('colada', False)]
+    try:
+        pdf = FPDF()
+        pdf.add_page()
         
-        if faltantes:
-            pdf.set_font("Arial", "B", 11)
-            pdf.set_fill_color(240, 240, 240)
-            # Limpeza de caracteres para o PDF não quebrar
-            nome_clean = secao.encode('ascii', 'ignore').decode('ascii')
-            pdf.cell(0, 8, f" {nome_clean if nome_clean else secao[0:5]}", ln=True, fill=True)
+        # Título
+        pdf.set_font("helvetica", "B", 16)
+        pdf.cell(0, 10, "Collector 2026 Pro - Lista de Faltas", new_x="LMARGIN", new_y="NEXT", align="C")
+        
+        # Subtítulo com Usuário
+        pdf.set_font("helvetica", "", 12)
+        pdf.cell(0, 10, f"Usuario: {user_name}", new_x="LMARGIN", new_y="NEXT", align="C")
+        pdf.ln(5)
+
+        for secao in LISTA_FINAL_ALBUM:
+            ids_secao = get_fig_ids(secao)
+            # Filtra apenas as figurinhas que NÃO estão coladas
+            faltantes = [fid for fid in ids_secao if not my_figs.get(fid, {}).get('colada', False)]
             
-            pdf.set_font("Arial", "", 10)
-            pdf.multi_cell(0, 7, ", ".join(faltantes))
-            pdf.ln(2)
-            
-    return pdf.output(dest='S').encode('latin-1', 'ignore')
+            if faltantes:
+                # Cabeçalho da Seção (ex: BRASIL, GRUPO A, etc)
+                pdf.set_font("helvetica", "B", 11)
+                pdf.set_fill_color(240, 240, 240)
+                # Limpa acentos para evitar erro de codificação no PDF
+                secao_clean = secao.encode('ascii', 'ignore').decode('ascii')
+                pdf.cell(0, 8, f" {secao_clean}", new_x="LMARGIN", new_y="NEXT", fill=True)
+                
+                # Lista de códigos das figurinhas
+                pdf.set_font("helvetica", "", 10)
+                txt_faltas = ", ".join(faltantes)
+                pdf.multi_cell(0, 7, txt_faltas)
+                pdf.ln(2)
+        
+        # Retorna o PDF como stream de bytes
+        return pdf.output()
+    except Exception as e:
+        st.error(f"Erro interno no motor do PDF: {e}")
+        return None
 
 # --- ESTILIZAÇÃO CSS ---
 st.markdown("""
@@ -160,12 +173,18 @@ def main():
         docs = db.collection("usuarios").document(user).collection("figurinhas").stream()
         my_figs = {doc.id: doc.to_dict() for doc in docs}
 
-        # Download do PDF
-        try:
-            pdf_data = gerar_pdf_faltantes(user, my_figs)
-            st.sidebar.download_button("📄 Baixar PDF de Faltas", pdf_data, f"faltas_{user}.pdf", "application/pdf", use_container_width=True)
-        except:
-            st.sidebar.error("Erro ao gerar PDF")
+        # --- SEÇÃO DO PDF NA SIDEBAR ---
+        pdf_bytes = gerar_pdf_faltantes(user, my_figs)
+        if pdf_bytes:
+            st.sidebar.download_button(
+                label="📄 Baixar PDF de Faltas",
+                data=pdf_bytes,
+                file_name=f"faltas_{user}.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
+        else:
+            st.sidebar.error("Erro ao processar PDF")
 
         if st.sidebar.button("Sair"): st.session_state.auth = False; st.rerun()
 

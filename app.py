@@ -85,30 +85,42 @@ def get_fig_ids(secao):
     else:
         return [f"{sigla}-{i:02d}" for i in range(1, 21)]
 
-# --- FUNÇÃO DE PDF ---
-def gerar_pdf_faltantes(user_name, my_figs):
+# --- FUNÇÕES DE PDF ---
+def gerar_pdf_lista(user_name, my_figs, tipo="faltas"):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, "Collector 2026 Pro - Lista de Faltas", ln=True, align="C")
+    
+    titulo = "Lista de Faltas" if tipo == "faltas" else "Lista de Repetidas"
+    pdf.cell(0, 10, f"Collector 2026 Pro - {titulo}", ln=True, align="C")
+    
     pdf.set_font("Helvetica", "", 12)
     pdf.cell(0, 10, f"Usuario: {user_name}", ln=True, align="C")
     pdf.ln(5)
 
+    tem_conteudo = False
     for secao in LISTA_FINAL_ALBUM:
         ids_secao = get_fig_ids(secao)
-        faltantes = [fid for fid in ids_secao if not my_figs.get(fid, {}).get('colada', False)]
-        if faltantes:
+        
+        if tipo == "faltas":
+            lista_ids = [fid for fid in ids_secao if not my_figs.get(fid, {}).get('colada', False)]
+        else:
+            # Para repetidas, mostramos o ID e a quantidade entre parênteses
+            lista_ids = [f"{fid} ({my_figs[fid]['repetidas']}x)" for fid in ids_secao if my_figs.get(fid, {}).get('repetidas', 0) > 0]
+            
+        if lista_ids:
+            tem_conteudo = True
             pdf.set_font("Helvetica", "B", 11)
             pdf.set_fill_color(240, 240, 240)
-            # Normalização para caracteres especiais
             secao_limpa = unicodedata.normalize('NFKD', secao).encode('ascii', 'ignore').decode('ascii')
             pdf.cell(0, 8, f" {secao_limpa}", ln=True, fill=True)
             pdf.set_font("Helvetica", "", 10)
-            pdf.multi_cell(0, 7, ", ".join(faltantes))
+            pdf.multi_cell(0, 7, ", ".join(lista_ids))
             pdf.ln(2)
     
-    # IMPORTANTE: converter explicitamente para bytes para o download_button
+    if not tem_conteudo:
+        pdf.cell(0, 10, "Nenhuma figurinha encontrada para esta lista.", ln=True)
+        
     return bytes(pdf.output())
 
 # --- ESTILIZAÇÃO ---
@@ -153,11 +165,9 @@ def main():
         user = st.session_state.user
         st.sidebar.title(f"👋 Olá, {user.capitalize()}!")
         
-        # Carregamento de dados do álbum
         docs = db.collection("usuarios").document(user).collection("figurinhas").stream()
         my_figs = {doc.id: doc.to_dict() for doc in docs}
         
-        # Estatísticas Globais
         total_album = sum(len(get_fig_ids(s)) for s in LISTA_FINAL_ALBUM)
         coladas_total = sum(1 for f in my_figs.values() if f.get('colada'))
         reps_total = sum(f.get('repetidas', 0) for f in my_figs.values())
@@ -168,18 +178,31 @@ def main():
         st.sidebar.write(f"Repetidas: **{reps_total}**")
         st.sidebar.progress(progresso_global)
 
-        # Exportar PDF
+        # --- BOTÕES DE EXPORTAÇÃO ---
+        st.sidebar.subheader("📥 Exportar Listas")
+        
         try:
-            pdf_bytes = gerar_pdf_faltantes(user, my_figs)
+            # Botão 1: Faltas
+            pdf_faltas = gerar_pdf_lista(user, my_figs, tipo="faltas")
             st.sidebar.download_button(
-                label="📄 Exportar Lista de Faltas (PDF)",
-                data=pdf_bytes,
+                label="📄 Baixar Lista de Faltas",
+                data=pdf_faltas,
                 file_name=f"faltas_{user}.pdf",
                 mime="application/pdf",
                 use_container_width=True
             )
+            
+            # Botão 2: Repetidas
+            pdf_reps = gerar_pdf_lista(user, my_figs, tipo="repetidas")
+            st.sidebar.download_button(
+                label="🔄 Baixar Lista de Repetidas",
+                data=pdf_reps,
+                file_name=f"repetidas_{user}.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
         except Exception as e:
-            st.sidebar.error("Erro ao preparar PDF")
+            st.sidebar.error("Erro ao preparar arquivos PDF.")
 
         if st.sidebar.button("Sair", use_container_width=True): 
             st.session_state.auth = False
@@ -269,16 +292,13 @@ def main():
         with tab_chat:
             st.subheader("💬 Suas Mensagens")
             try:
-                # Consulta básica sem order_by inicialmente para evitar erro de índice no Firestore
                 msgs_ref = db.collection("mensagens").where("para", "==", user).stream()
-                
                 msgs_list = []
                 for m in msgs_ref:
                     data = m.to_dict()
                     data['id'] = m.id
                     msgs_list.append(data)
                 
-                # Ordenação manual se necessário ou via Python para garantir que funcione sem índice
                 msgs_list.sort(key=lambda x: x.get('timestamp') or 0, reverse=True)
 
                 if msgs_list:

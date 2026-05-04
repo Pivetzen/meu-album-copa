@@ -9,15 +9,16 @@ from fpdf import FPDF
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Collector 2026 Pro", layout="wide", page_icon="⚽")
 
-# --- INICIALIZAÇÃO DO FIREBASE (VERSÃO ROBUSTA) ---
+# --- INICIALIZAÇÃO DO FIREBASE ---
 @st.cache_resource
 def init_firebase():
     if not firebase_admin._apps:
         try:
-            # Busca os segredos do Streamlit
+            # Pega o dicionário dos secrets
             fb_dict = dict(st.secrets["firebase_credentials"])
             
-            # Limpeza crucial da chave privada para evitar erro de PEM
+            # CORREÇÃO CRUCIAL: O Streamlit Secrets muitas vezes escapa as quebras de linha
+            # Isso corrige o erro de "Unable to load PEM file" visto no seu print.
             if "private_key" in fb_dict:
                 fb_dict["private_key"] = fb_dict["private_key"].replace("\\n", "\n")
             
@@ -76,7 +77,6 @@ GRUPOS_SORTEIO = {
 
 LISTA_FINAL_ALBUM = ["Página inicial"] + [time for grupo in GRUPOS_SORTEIO.values() for time in grupo] + ["FIFA World Cup History", "Figurinhas da Coca-Cola"]
 
-# --- LÓGICA DE GERAÇÃO DE IDs ---
 def get_fig_ids(secao):
     sigla = SIGLAS_CUSTOM.get(secao)
     if secao == "Página inicial":
@@ -88,47 +88,39 @@ def get_fig_ids(secao):
     else:
         return [f"{sigla}-{i:02d}" for i in range(1, 21)]
 
-# --- FUNÇÃO PARA GERAR O PDF CORRIGIDA ---
+# --- FUNÇÃO DE PDF CORRIGIDA ---
 def gerar_pdf_faltantes(user_name, my_figs):
-    try:
-        pdf = FPDF()
-        pdf.add_page()
-        
-        # Título
-        pdf.set_font("helvetica", "B", 16)
-        pdf.cell(0, 10, "Collector 2026 Pro - Lista de Faltas", new_x="LMARGIN", new_y="NEXT", align="C")
-        
-        # Subtítulo com Usuário
-        pdf.set_font("helvetica", "", 12)
-        pdf.cell(0, 10, f"Usuario: {user_name}", new_x="LMARGIN", new_y="NEXT", align="C")
-        pdf.ln(5)
+    # Usando FPDF2 (garanta que está no requirements.txt)
+    pdf = FPDF()
+    pdf.add_page()
+    
+    # Título - Usando Helvetica para evitar problemas de encoding
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 10, "Collector 2026 Pro - Lista de Faltas", ln=True, align="C")
+    
+    pdf.set_font("Helvetica", "", 12)
+    pdf.cell(0, 10, f"Usuario: {user_name}", ln=True, align="C")
+    pdf.ln(5)
 
-        for secao in LISTA_FINAL_ALBUM:
-            ids_secao = get_fig_ids(secao)
-            # Filtra apenas as figurinhas que NÃO estão coladas
-            faltantes = [fid for fid in ids_secao if not my_figs.get(fid, {}).get('colada', False)]
+    for secao in LISTA_FINAL_ALBUM:
+        ids_secao = get_fig_ids(secao)
+        faltantes = [fid for fid in ids_secao if not my_figs.get(fid, {}).get('colada', False)]
+        
+        if faltantes:
+            pdf.set_font("Helvetica", "B", 11)
+            pdf.set_fill_color(240, 240, 240)
+            # Remove acentos apenas para o PDF para segurança total
+            secao_limpa = secao.encode('ascii', 'ignore').decode('ascii')
+            pdf.cell(0, 8, f" {secao_limpa}", ln=True, fill=True)
             
-            if faltantes:
-                # Cabeçalho da Seção (ex: BRASIL, GRUPO A, etc)
-                pdf.set_font("helvetica", "B", 11)
-                pdf.set_fill_color(240, 240, 240)
-                # Limpa acentos para evitar erro de codificação no PDF
-                secao_clean = secao.encode('ascii', 'ignore').decode('ascii')
-                pdf.cell(0, 8, f" {secao_clean}", new_x="LMARGIN", new_y="NEXT", fill=True)
-                
-                # Lista de códigos das figurinhas
-                pdf.set_font("helvetica", "", 10)
-                txt_faltas = ", ".join(faltantes)
-                pdf.multi_cell(0, 7, txt_faltas)
-                pdf.ln(2)
-        
-        # Retorna o PDF como stream de bytes
-        return pdf.output()
-    except Exception as e:
-        st.error(f"Erro interno no motor do PDF: {e}")
-        return None
+            pdf.set_font("Helvetica", "", 10)
+            pdf.multi_cell(0, 7, ", ".join(faltantes))
+            pdf.ln(2)
+            
+    # O segredo é retornar os bytes (output retorna string no fpdf1, bytes no fpdf2)
+    return pdf.output()
 
-# --- ESTILIZAÇÃO CSS ---
+# --- ESTILIZAÇÃO ---
 st.markdown("""
     <style>
     .fig-card { border: 2px solid #ddd; border-radius: 10px; padding: 10px; text-align: center; background-color: white; margin-bottom: 5px; position: relative; }
@@ -173,18 +165,18 @@ def main():
         docs = db.collection("usuarios").document(user).collection("figurinhas").stream()
         my_figs = {doc.id: doc.to_dict() for doc in docs}
 
-        # --- SEÇÃO DO PDF NA SIDEBAR ---
-        pdf_bytes = gerar_pdf_faltantes(user, my_figs)
-        if pdf_bytes:
+        # --- LÓGICA DO BOTÃO DE DOWNLOAD ---
+        try:
+            pdf_data = gerar_pdf_faltantes(user, my_figs)
             st.sidebar.download_button(
                 label="📄 Baixar PDF de Faltas",
-                data=pdf_bytes,
+                data=pdf_data,
                 file_name=f"faltas_{user}.pdf",
                 mime="application/pdf",
                 use_container_width=True
             )
-        else:
-            st.sidebar.error("Erro ao processar PDF")
+        except Exception as e:
+            st.sidebar.error(f"Erro ao preparar PDF: {e}")
 
         if st.sidebar.button("Sair"): st.session_state.auth = False; st.rerun()
 

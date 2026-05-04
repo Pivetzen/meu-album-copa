@@ -4,7 +4,7 @@ import hashlib
 import firebase_admin
 import json
 from firebase_admin import credentials, firestore
-from fpdf import FPDF
+from fpdf import FPDF2
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Collector 2026 Pro", layout="wide", page_icon="⚽")

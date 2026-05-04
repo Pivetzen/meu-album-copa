@@ -4,7 +4,7 @@ import hashlib
 import firebase_admin
 import urllib.parse
 from firebase_admin import credentials, firestore
-from fpdf import FPDF  # Biblioteca para o PDF
+from fpdf import FPDF
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Collector 2026 Pro", layout="wide", page_icon="⚽")
@@ -83,14 +83,17 @@ def get_fig_ids(secao):
     else:
         return [f"{sigla}-{i:02d}" for i in range(1, 21)]
 
-# --- FUNÇÃO PARA GERAR O PDF DE FALTANTES ---
+# --- FUNÇÃO PARA GERAR O PDF DE FALTANTES (CORRIGIDA) ---
 def gerar_pdf_faltantes(user_name, my_figs):
     pdf = FPDF()
     pdf.add_page()
+    
+    # Título sem emojis para evitar erro de encoding
     pdf.set_font("Arial", "B", 16)
-    pdf.cell(0, 10, "🏆 Collector 2026 Pro - Figurinhas Faltantes", ln=True, align="C")
+    pdf.cell(0, 10, "Collector 2026 Pro - Figurinhas Faltantes", ln=True, align="C")
+    
     pdf.set_font("Arial", "", 12)
-    pdf.cell(0, 10, f"Usuário: {user_name}", ln=True, align="C")
+    pdf.cell(0, 10, f"Usuario: {user_name}", ln=True, align="C")
     pdf.ln(5)
 
     for secao in LISTA_FINAL_ALBUM:
@@ -100,15 +103,16 @@ def gerar_pdf_faltantes(user_name, my_figs):
         if faltantes:
             pdf.set_font("Arial", "B", 11)
             pdf.set_fill_color(230, 230, 230)
-            pdf.cell(0, 8, f" {secao}", ln=True, fill=True)
-            pdf.set_font("Arial", "", 10)
+            # Encode para latin-1 para suportar acentos básicos
+            nome_secao = secao.encode('latin-1', 'replace').decode('latin-1')
+            pdf.cell(0, 8, f" {nome_secao}", ln=True, fill=True)
             
-            # Agrupa os IDs em linhas para economizar espaço
+            pdf.set_font("Arial", "", 10)
             texto_faltantes = ", ".join(faltantes)
             pdf.multi_cell(0, 7, texto_faltantes)
             pdf.ln(2)
             
-    return pdf.output(dest='S').encode('latin-1')
+    return pdf.output(dest='S')
 
 # --- ESTILIZAÇÃO CSS ---
 st.markdown("""
@@ -133,15 +137,17 @@ def main():
             u = st.text_input("Usuário").lower().strip()
             p = st.text_input("Senha", type="password")
             if st.button("Entrar"):
-                res = db.collection("usuarios").document(u).get()
-                if res.exists and res.to_dict()['password'] == hash_pass(p):
-                    st.session_state.auth = True; st.session_state.user = u; st.rerun()
-                else: st.error("Usuário ou senha inválidos.")
+                if db:
+                    res = db.collection("usuarios").document(u).get()
+                    if res.exists and res.to_dict()['password'] == hash_pass(p):
+                        st.session_state.auth = True; st.session_state.user = u; st.rerun()
+                    else: st.error("Usuário ou senha inválidos.")
+                else: st.error("Erro na conexão com Banco de Dados.")
         with aba2:
             nu = st.text_input("Novo Usuário").lower().strip()
             np = st.text_input("Nova Senha", type="password")
             if st.button("Criar Conta"):
-                if nu and np:
+                if nu and np and db:
                     db.collection("usuarios").document(nu).set({'password': hash_pass(np)})
                     st.success("Conta criada com sucesso! Faça login na outra aba.")
 
@@ -154,14 +160,17 @@ def main():
         my_figs = {doc.id: doc.to_dict() for doc in docs}
 
         # --- BOTÃO DE PDF NA SIDEBAR ---
-        pdf_bytes = gerar_pdf_faltantes(user, my_figs)
-        st.sidebar.download_button(
-            label="📄 Baixar PDF de Faltas",
-            data=pdf_bytes,
-            file_name=f"faltas_album_{user}.pdf",
-            mime="application/pdf",
-            use_container_width=True
-        )
+        try:
+            pdf_bytes = gerar_pdf_faltantes(user, my_figs)
+            st.sidebar.download_button(
+                label="📄 Baixar PDF de Faltas",
+                data=pdf_bytes,
+                file_name=f"faltas_{user}.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
+        except Exception as e:
+            st.sidebar.error("Erro ao gerar PDF")
 
         if st.sidebar.button("Sair"): st.session_state.auth = False; st.rerun()
 

@@ -16,7 +16,6 @@ def init_firebase():
     if not firebase_admin._apps:
         try:
             fb_dict = dict(st.secrets["firebase_credentials"])
-            # Correção para quebras de linha na chave PEM
             if "private_key" in fb_dict:
                 fb_dict["private_key"] = fb_dict["private_key"].replace("\\n", "\n")
             
@@ -102,11 +101,14 @@ def gerar_pdf_faltantes(user_name, my_figs):
         if faltantes:
             pdf.set_font("Helvetica", "B", 11)
             pdf.set_fill_color(240, 240, 240)
+            # Normalização para garantir que caracteres especiais não quebrem o PDF
             secao_limpa = unicodedata.normalize('NFKD', secao).encode('ascii', 'ignore').decode('ascii')
             pdf.cell(0, 8, f" {secao_limpa}", ln=True, fill=True)
             pdf.set_font("Helvetica", "", 10)
             pdf.multi_cell(0, 7, ", ".join(faltantes))
             pdf.ln(2)
+    
+    # Retorna o PDF como bytes compatíveis com st.download_button
     return pdf.output()
 
 # --- ESTILIZAÇÃO ---
@@ -167,17 +169,17 @@ def main():
         st.sidebar.write(f"Repetidas: **{reps_total}**")
         st.sidebar.progress(progresso_global)
 
-        # Botão PDF
+        # Exportar PDF
         try:
-            pdf_data = gerar_pdf_faltantes(user, my_figs)
+            pdf_bytes = gerar_pdf_faltantes(user, my_figs)
             st.sidebar.download_button(
                 label="📄 Exportar Lista de Faltas (PDF)",
-                data=pdf_data,
+                data=pdf_bytes,
                 file_name=f"faltas_{user}.pdf",
                 mime="application/pdf",
                 use_container_width=True
             )
-        except Exception as e:
+        except Exception:
             st.sidebar.error("Erro ao preparar PDF")
 
         if st.sidebar.button("Sair", use_container_width=True): 
@@ -286,7 +288,7 @@ def main():
                             st.rerun()
                 if not found_msg: st.info("Sua caixa de entrada está vazia.")
             except:
-                st.info("Inicie conversas através da aba de Trocas!")
+                st.info("Sua caixa de entrada está vazia ou ainda não possui mensagens.")
 
         # Modal de Edição na Sidebar
         if 'edit' in st.session_state:
